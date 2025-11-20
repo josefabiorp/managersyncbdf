@@ -128,3 +128,42 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('politicas-empresa', [PoliticaEmpresaController::class, 'show']);
     Route::put('politicas-empresa', [PoliticaEmpresaController::class, 'update']);
 });
+
+
+
+
+
+use App\Http\Controllers\TurnoController;
+use App\Http\Controllers\AsignacionTurnoController;
+
+Route::middleware('auth:sanctum')->group(function () {
+
+    // CRUD de turnos
+    Route::get('/turnos', [TurnoController::class, 'index']);
+    Route::post('/turnos', [TurnoController::class, 'store']);
+    Route::put('/turnos/{turno}', [TurnoController::class, 'update']);
+    Route::delete('/turnos/{turno}', [TurnoController::class, 'destroy']);
+
+    // Asignación de turno a usuarios
+    Route::put('/usuarios/{usuario}/turno', [AsignacionTurnoController::class, 'asignar']);
+    Route::get('/usuarios/{usuario}/turno', [AsignacionTurnoController::class, 'obtenerTurno']);
+
+});
+
+
+
+
+// ...
+
+Route::middleware('auth:sanctum')->group(function () {
+
+    // ...
+
+    // Sucursales de la empresa
+    Route::get('/sucursales-empresa', [AuthController::class, 'sucursalesEmpresa']);
+
+    // Empleados por sucursal
+    Route::get('/empleados/sucursal/{sucursalId}', [AuthController::class, 'empleadosPorSucursal']);
+
+    // ...
+});

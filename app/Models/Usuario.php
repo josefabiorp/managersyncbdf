@@ -43,6 +43,18 @@ public function descansos()
     return $this->hasMany(Descanso::class, 'usuario_id');
 }
 
+public function turnos()
+{
+    return $this->belongsToMany(\App\Models\Turno::class, 'empleado_turno');
+}
+
+/**
+ * Si solo quieres manejar 1 turno activo por empleado:
+ */
+public function turnoActual()
+{
+    return $this->turnos()->first(); // o ->latest('empleado_turno.created_at')->first();
+}
 
 
 

@@ -11,6 +11,10 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
 
+use App\Models\Sucursal;
+
+
+
 class AuthController extends Controller
 {
     public function index()
@@ -284,5 +288,47 @@ class AuthController extends Controller
             return response()->json(['error' => 'No se pudieron obtener los usuarios'], 500);
         }
     }
+
+    public function sucursalesEmpresa(Request $request)
+{
+    $user = $request->user();
+
+    try {
+        $sucursales = Sucursal::where('empresa_id', $user->empresa_id)
+            ->orderBy('nombre')
+            ->get(['id', 'nombre']);
+
+        return response()->json($sucursales, 200);
+    } catch (\Exception $e) {
+        \Log::error('Error al obtener sucursales de la empresa: ' . $e->getMessage());
+        return response()->json(['error' => 'No se pudieron obtener las sucursales'], 500);
+    }
+}
+
+public function empleadosPorSucursal(Request $request, $sucursalId)
+{
+    $user = $request->user();
+
+    try {
+        // Validar que la sucursal pertenezca a la misma empresa del usuario
+        $sucursal = Sucursal::where('empresa_id', $user->empresa_id)
+            ->where('id', $sucursalId)
+            ->firstOrFail();
+
+        // ADMIN → puede ver todos los empleados de la sucursal
+        // EMPLEADO → en este módulo igual suele ser admin, pero dejamos la lógica limpia
+        $usuarios = Usuario::with('sucursal:id,nombre')
+            ->where('empresa_id', $user->empresa_id)
+            ->where('sucursal_id', $sucursal->id)
+            ->orderBy('nombre')
+            ->get(['id','nombre','email','cedula','empresa_id','sucursal_id','role']);
+
+        return response()->json($usuarios, 200);
+    } catch (\Exception $e) {
+        \Log::error('Error al obtener empleados por sucursal: ' . $e->getMessage());
+        return response()->json(['error' => 'No se pudieron obtener los empleados'], 500);
+    }
+}
+
 
 }
