@@ -17,11 +17,24 @@ use App\Models\Sucursal;
 
 class AuthController extends Controller
 {
-    public function index()
-    {
-        return Usuario::with('sucursal:id,nombre,direccion')
-            ->get(['id','nombre','email','cedula','empresa_id','sucursal_id','role']);
-    }
+  public function index()
+{
+    $usuarios = Usuario::with([
+            'sucursal:id,nombre,direccion',
+            'turnos:id,nombre,hora_inicio,hora_fin,tolerancia_entrada,tolerancia_salida,minutos_almuerzo'
+        ])
+        ->get(['id','nombre','email','cedula','empresa_id','sucursal_id','role']);
+
+    // Convertimos la relación turnos (colección) en un único turno
+    $usuarios->transform(function ($u) {
+        $u->turno = $u->turnos->first(); // si solo usas 1 turno por empleado
+        unset($u->turnos); // opcional: oculta la colección si no la necesitas
+        return $u;
+    });
+
+    return response()->json($usuarios);
+}
+
 
     public function show()
     {
