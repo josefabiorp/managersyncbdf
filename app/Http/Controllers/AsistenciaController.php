@@ -11,11 +11,30 @@ use App\Services\AsistenciaCalculator;
 class AsistenciaController extends Controller
 {
     /** ======================
-     * LISTAR TODAS LAS ASISTENCIAS
+     * LISTAR ASISTENCIAS (MULTIEMPRESA)
      * ====================== */
-    public function index()
+    public function index(Request $request)
     {
-        return Asistencia::with(['usuario', 'empresa', 'sucursal'])->get();
+        $user = $request->user();
+
+        $query = Asistencia::with(['usuario', 'empresa', 'sucursal']);
+
+        // Si hay usuario autenticado, filtramos de forma segura por empresa/usuario
+        if ($user) {
+            $role = strtolower($user->role ?? $user->rol ?? '');
+
+            // Admin → ve todas las asistencias de su empresa
+            if (in_array($role, ['admin', 'administrador'], true)) {
+                $query->where('empresa_id', $user->empresa_id);
+            } else {
+                // Empleado/otros roles → solo sus propias asistencias
+                $query->where('usuario_id', $user->id);
+            }
+        }
+
+        return response()->json(
+            $query->orderBy('fecha', 'desc')->get()
+        );
     }
 
     /** ======================
@@ -31,20 +50,20 @@ class AsistenciaController extends Controller
 
         $fecha = now()->toDateString();
 
-        // Ya existe entrada
+        // Ya existe entrada para hoy
         $asistencia = Asistencia::where('usuario_id', $usuario->id)
             ->where('fecha', $fecha)
             ->first();
 
         if ($asistencia) {
             return response()->json([
-                'message' => 'Entrada ya registrada',
-                'estado'  => $asistencia->hora_salida ? 'fuera' : 'presente',
+                'message'    => 'Entrada ya registrada',
+                'estado'     => $asistencia->hora_salida ? 'fuera' : 'presente',
                 'asistencia' => $asistencia
             ]);
         }
 
-        // Crear registro
+        // Crear registro de entrada
         $horaEntradaReal = now()->format("H:i:s");
 
         $asistencia = Asistencia::create([
@@ -56,32 +75,32 @@ class AsistenciaController extends Controller
             'estado'       => 'presente',
         ]);
 
-        // Turno asignado
+        // Turno asignado (turno actual del empleado)
         $turno = $usuario->turnoActual();
         if (!$turno) {
             return response()->json([
-                'message' => 'Entrada registrada sin turno asignado',
-                'estado' => 'presente',
+                'message'    => 'Entrada registrada sin turno asignado',
+                'estado'     => 'presente',
                 'asistencia' => $asistencia
             ]);
         }
 
-        // Políticas (RELACIÓN CORRECTA)
+        // Políticas de la empresa
         $politicas = $usuario->empresa->politica;
         if (!$politicas) {
             return response()->json([
-                'message' => 'Entrada registrada (sin políticas configuradas)',
-                'estado' => 'presente',
+                'message'    => 'Entrada registrada (sin políticas configuradas)',
+                'estado'     => 'presente',
                 'asistencia' => $asistencia
             ]);
         }
 
-        // Cálculo atraso
+        // Cálculo de atraso (datos coherentes)
         $horaEsperada = Carbon::parse($turno->hora_inicio);
         $horaReal     = Carbon::parse($horaEntradaReal);
 
-        $diferenciaMin = $horaEsperada->diffInMinutes($horaReal, false);
-        $tolerancia    = $politicas->minutos_tolerancia_atraso ?? 0;
+        $diferenciaMin = $horaEsperada->diffInMinutes($horaReal, false); // negativo si llega antes
+        $tolerancia    = (int) ($politicas->minutos_tolerancia_atraso ?? 0);
 
         $minutosAtraso = ($diferenciaMin > $tolerancia) ? $diferenciaMin : 0;
 
@@ -90,11 +109,11 @@ class AsistenciaController extends Controller
         $asistencia->save();
 
         return response()->json([
-            'message' => 'Entrada registrada correctamente',
-            'estado'  => 'presente',
-            'asistencia' => $asistencia,
-            'turno_usado' => $turno->nombre,
-            'politica_tolerancia' => $tolerancia
+            'message'            => 'Entrada registrada correctamente',
+            'estado'             => 'presente',
+            'asistencia'         => $asistencia,
+            'turno_usado'        => $turno->nombre,
+            'politica_tolerancia'=> $tolerancia
         ]);
     }
 
@@ -121,7 +140,7 @@ class AsistenciaController extends Controller
 
         if ($asistencia->hora_salida) {
             return response()->json([
-                'error' => 'Salida ya registrada',
+                'error'  => 'Salida ya registrada',
                 'estado' => 'fuera'
             ], 400);
         }
@@ -129,28 +148,28 @@ class AsistenciaController extends Controller
         $horaSalidaReal = now()->format("H:i:s");
         $asistencia->hora_salida = $horaSalidaReal;
 
-        // Turno asignado
+        // Turno asignado (turno actual del empleado)
         $turno = $usuario->turnoActual();
         if (!$turno) {
             $asistencia->estado = 'fuera';
             $asistencia->save();
 
             return response()->json([
-                'message' => 'Salida sin turno asignado',
-                'estado'  => 'fuera',
+                'message'    => 'Salida sin turno asignado',
+                'estado'     => 'fuera',
                 'asistencia' => $asistencia
             ]);
         }
 
-        // Políticas (RELACIÓN CORRECTA)
+        // Políticas de la empresa
         $politicas = $usuario->empresa->politica;
         if (!$politicas) {
             $asistencia->estado = 'fuera';
             $asistencia->save();
 
             return response()->json([
-                'message' => 'Salida registrada (sin políticas configuradas)',
-                'estado'  => 'fuera',
+                'message'    => 'Salida registrada (sin políticas configuradas)',
+                'estado'     => 'fuera',
                 'asistencia' => $asistencia
             ]);
         }
@@ -159,10 +178,12 @@ class AsistenciaController extends Controller
         $horaEsperadaSalida = Carbon::parse($turno->hora_fin);
         $horaRealSalida     = Carbon::parse($horaSalidaReal);
 
-        $toleranciaSalida = $politicas->minutos_tolerancia_salida ?? 0;
+        $toleranciaSalida = (int) ($politicas->minutos_tolerancia_salida ?? 0);
         $minutosSalidaAnticipada = 0;
 
-        if ($horaRealSalida->lt($horaEsperadaSalida->copy()->subMinutes($toleranciaSalida))) {
+        $limiteSinPenalizar = $horaEsperadaSalida->copy()->subMinutes($toleranciaSalida);
+
+        if ($horaRealSalida->lt($limiteSinPenalizar)) {
             $minutosSalidaAnticipada = $horaEsperadaSalida->diffInMinutes($horaRealSalida);
         }
 
@@ -171,23 +192,29 @@ class AsistenciaController extends Controller
         if ($horaRealSalida->gt($horaEsperadaSalida)) {
             $minutosHorasExtra = $horaRealSalida->diffInMinutes($horaEsperadaSalida);
 
-            $maxExtra = $politicas->max_horas_extra_por_dia;
-            if ($maxExtra) {
+            $maxExtra = (int) ($politicas->max_horas_extra_por_dia ?? 0);
+            if ($maxExtra > 0) {
                 $minutosHorasExtra = min($minutosHorasExtra, $maxExtra * 60);
             }
         }
 
-        // TIEMPO TRABAJADO
+        // TIEMPO TRABAJADO (protegiendo datos incoherentes)
         $horaEntradaReal = Carbon::parse($asistencia->hora_entrada);
-        $minutosTrabajados = $horaRealSalida->diffInMinutes($horaEntradaReal);
+        if ($horaRealSalida->lt($horaEntradaReal)) {
+            // Si por error la salida es "antes" que la entrada, no tiramos excepción,
+            // pero dejamos trabajados en 0 para no dañar reportes.
+            $minutosTrabajados = 0;
+        } else {
+            $minutosTrabajados = $horaRealSalida->diffInMinutes($horaEntradaReal);
+        }
 
-        // Estado final
+        // Estado final (mantenemos la misma lógica de prioridad)
         $estadoJornada =
             $minutosSalidaAnticipada > 0 ? 'incompleta'
             : ($minutosHorasExtra > 0 ? 'extra'
             : 'completa');
 
-        // Guardar
+        // Guardar en DB (mismos campos que ya usabas)
         $asistencia->minutos_salida_anticipada = $minutosSalidaAnticipada;
         $asistencia->minutos_horas_extra       = $minutosHorasExtra;
         $asistencia->minutos_trabajados        = $minutosTrabajados;
@@ -196,10 +223,10 @@ class AsistenciaController extends Controller
         $asistencia->save();
 
         return response()->json([
-            'message' => 'Salida registrada correctamente',
-            'estado'  => 'fuera',
+            'message'    => 'Salida registrada correctamente',
+            'estado'     => 'fuera',
             'asistencia' => $asistencia,
-            'politicas' => [
+            'politicas'  => [
                 'tolerancia_salida' => $toleranciaSalida,
                 'max_extra'         => $politicas->max_horas_extra_por_dia
             ]
@@ -207,7 +234,7 @@ class AsistenciaController extends Controller
     }
 
     /** ======================
-     * ESTADO ACTUAL
+     * ESTADO ACTUAL DEL DÍA
      * ====================== */
     public function estadoActual($usuario_id)
     {
@@ -221,8 +248,9 @@ class AsistenciaController extends Controller
             $query = Asistencia::where('usuario_id', $usuario_id)
                 ->where('fecha', now()->toDateString());
 
-            // No admin → filtrar empresa
-            if (!in_array($userAuth->role, ['admin'])) {
+            // No admin → filtrar empresa y sucursal
+            $role = strtolower($userAuth->role ?? $userAuth->rol ?? '');
+            if (!in_array($role, ['admin', 'administrador'], true)) {
                 $query->where('empresa_id', $userAuth->empresa_id);
 
                 if ($userAuth->sucursal_id) {
@@ -234,7 +262,7 @@ class AsistenciaController extends Controller
 
             if (!$asistencia) {
                 return response()->json([
-                    'estado' => 'sin_entrada',
+                    'estado'  => 'sin_entrada',
                     'message' => 'Sin registro hoy'
                 ]);
             }
@@ -244,13 +272,13 @@ class AsistenciaController extends Controller
                 : 'presente';
 
             return response()->json([
-                'estado' => $estado,
+                'estado'     => $estado,
                 'asistencia' => $asistencia
             ]);
 
         } catch (\Throwable $e) {
             return response()->json([
-                'error' => 'Error interno',
+                'error'   => 'Error interno',
                 'details' => $e->getMessage()
             ], 500);
         }
@@ -262,59 +290,73 @@ class AsistenciaController extends Controller
     public function obtenerPorRango(Request $request)
     {
         $usuario_id = $request->usuario_id;
-        $from = $request->from;
-        $to = $request->to;
+        $from       = $request->from;
+        $to         = $request->to;
 
-        $userAuth = auth()->user();
+        $userAuth = $request->user();
 
         if (!$usuario_id || !$from || !$to) {
             return response()->json(['error' => 'Faltan parámetros'], 400);
         }
 
-        // Usuario + último turno asignado
+        // Normalizar fechas (si vienen invertidas, las corregimos)
+        if ($from > $to) {
+            [$from, $to] = [$to, $from];
+        }
+
+        // Usuario + últimos turnos asignados
         $usuario = Usuario::with(['turnos' => function ($q) {
             $q->orderBy('empleado_turno.created_at', 'desc');
         }])->findOrFail($usuario_id);
 
-        $turno = $usuario->turnos->first();
+        // Para este primer diseño, asumimos un turno principal (último asignado)
+        $turno = $usuario->turnos->first() ?: null;
 
-        // POLITICAS CORRECTAS
-        $politicas = $usuario->empresa->politica;
+        // Políticas de la empresa del usuario
+        $politicas = $usuario->empresa->politica ?? null;
 
-        // Obtener asistencias del rango
+        // Obtener asistencias del rango (limitadas por empresa de quien consulta)
         $query = Asistencia::where('usuario_id', $usuario_id)
             ->whereBetween('fecha', [$from, $to])
             ->orderBy('fecha', 'asc');
 
-        $query->where('empresa_id', $userAuth->empresa_id);
+        if ($userAuth) {
+            $query->where('empresa_id', $userAuth->empresa_id);
+        }
 
         $asistencias = $query->get();
 
-        // Obtener descansos del rango
-        $descansos = \App\Models\Descanso::where('usuario_id', $usuario_id)
+        // Obtener descansos del rango (filtrados por empresa si ya lo tenés en la tabla)
+        $descansosQuery = \App\Models\Descanso::where('usuario_id', $usuario_id)
             ->whereBetween('hora_inicio', [$from . " 00:00:00", $to . " 23:59:59"])
-            ->orderBy('hora_inicio', 'asc')
-            ->get();
+            ->orderBy('hora_inicio', 'asc');
+
+        if ($userAuth && \Schema::hasColumn('descansos', 'empresa_id')) {
+            $descansosQuery->where('empresa_id', $userAuth->empresa_id);
+        }
+
+        $descansos = $descansosQuery->get();
 
         // Procesamiento corporativo
         $diaADia = [];
         $resumen = [
-            'dias' => 0,
-            'total_trabajado_min' => 0,
-            'total_extra_min' => 0,
-            'total_atraso_min' => 0,
-            'total_salida_anticipada_min' => 0,
-            'total_descansos_min' => 0,
-            'exceso_descanso_sum' => 0,
+            'dias'                          => 0,
+            'total_trabajado_min'           => 0,
+            'total_extra_min'               => 0,
+            'total_atraso_min'              => 0,
+            'total_salida_anticipada_min'   => 0,
+            'total_descansos_min'           => 0,
+            'exceso_descanso_sum'           => 0,
         ];
 
         foreach ($asistencias as $asis) {
 
+            // Descansos de ese día (por fecha)
             $descansosDia = $descansos->filter(function ($d) use ($asis) {
                 return substr($d->hora_inicio, 0, 10) === $asis->fecha;
             });
 
-            // Servicio de cálculo corporativo
+            // Servicio corporativo centralizado
             $datos = AsistenciaCalculator::calcularDia(
                 $asis,
                 $turno,
@@ -323,29 +365,31 @@ class AsistenciaController extends Controller
             );
 
             $dia = array_merge([
-                'fecha'  => $asis->fecha,
+                'fecha'   => $asis->fecha,
                 'entrada' => $asis->hora_entrada,
                 'salida'  => $asis->hora_salida,
             ], $datos);
 
             $diaADia[] = $dia;
 
-            // Resumen general
+            // Acumulados generales
             $resumen['dias']++;
-            $resumen['total_trabajado_min']         += $datos['trabajado_min'];
-            $resumen['total_extra_min']             += $datos['horas_extra_min'];
-            $resumen['total_atraso_min']            += $datos['atraso_min'];
-            $resumen['total_salida_anticipada_min'] += $datos['salida_anticipada_min'];
-            $resumen['total_descansos_min']         += $datos['descansos_usados_min'];
-            $resumen['exceso_descanso_sum']         += $datos['exceso_descanso_min'];
+            $resumen['total_trabajado_min']           += $datos['trabajado_min'];
+            $resumen['total_extra_min']               += $datos['horas_extra_min'];
+            $resumen['total_atraso_min']              += $datos['atraso_min'];
+            $resumen['total_salida_anticipada_min']   += $datos['salida_anticipada_min'];
+            $resumen['total_descansos_min']           += $datos['descansos_usados_min'];
+            $resumen['exceso_descanso_sum']           += $datos['exceso_descanso_min'];
         }
 
-        // Cumplimiento general
+        // Cumplimiento general (mantenemos tu lógica original, solo ordenada)
         if ($resumen['dias'] === 0) {
             $resumen['cumplimiento_general'] = "sin_registros";
         } else {
+            $promedioAtraso = $resumen['total_atraso_min'] / max(1, $resumen['dias']);
+
             $porcentaje = 100 - (
-                ($resumen['total_atraso_min'] / max(1, $resumen['dias'])) * 0.5 +
+                ($promedioAtraso * 0.5) +
                 ($resumen['exceso_descanso_sum'] > 0 ? 10 : 0)
             );
 
@@ -369,10 +413,15 @@ class AsistenciaController extends Controller
                 'minutos_almuerzo'   => $turno->minutos_almuerzo,
             ] : null,
 
-            'data'     => $asistencias,
-            'dia_a_dia'=> $diaADia,
-            
-            'resumen'  => $resumen,
+            // Data cruda de la tabla (mantengo por compatibilidad)
+            'data'      => $asistencias,
+
+            // Data calculada día a día (lo que usa el frontend profesional)
+            'dia_a_dia' => $diaADia,
+
+            'resumen'   => $resumen,
         ]);
     }
 }
+
+

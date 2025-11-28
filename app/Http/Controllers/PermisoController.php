@@ -7,7 +7,7 @@ use Illuminate\Http\Request;
 
 class PermisoController extends Controller
 {
-    public function index(Request $request)
+   public function index(Request $request)
 {
     $user = $request->user();
 
@@ -24,10 +24,14 @@ class PermisoController extends Controller
     }
 
     // ============================
-    //   ADMINISTRADOR → Ve TODO
+    //   ADMINISTRADOR → Solo permisos de SU EMPRESA
     // ============================
     else {
-        // Filtros OPCIONALES
+
+        // 🚀 FILTRO CRÍTICO QUE FALTABA
+        $query->where('empresa_id', $user->empresa_id);
+
+        // Filtros opcionales
         if ($request->sucursal_id) {
             $query->where('sucursal_id', $request->sucursal_id);
         }
@@ -48,6 +52,7 @@ class PermisoController extends Controller
         $query->orderBy('created_at', 'desc')->paginate(20)
     );
 }
+
 
 
     public function store(Request $request)
