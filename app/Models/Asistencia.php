@@ -17,13 +17,12 @@ class Asistencia extends Model
         'hora_entrada',
         'hora_salida',
         'estado',
-
-        // Campos de cálculo
         'minutos_atraso',
         'minutos_salida_anticipada',
         'minutos_horas_extra',
         'minutos_trabajados',
         'estado_jornada',
+        'auditoria',
     ];
 
     protected $casts = [
@@ -34,5 +33,21 @@ class Asistencia extends Model
         'minutos_salida_anticipada' => 'integer',
         'minutos_horas_extra' => 'integer',
         'minutos_trabajados' => 'integer',
+        'auditoria' => 'array',
     ];
+
+    public function usuario()
+    {
+        return $this->belongsTo(Usuario::class);
+    }
+
+    public function empresa()
+    {
+        return $this->belongsTo(Empresa::class);
+    }
+
+    public function sucursal()
+    {
+        return $this->belongsTo(Sucursal::class);
+    }
 }

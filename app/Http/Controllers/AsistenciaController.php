@@ -6,6 +6,7 @@ use App\Models\Asistencia;
 use App\Models\Usuario;
 use Illuminate\Http\Request;
 use Carbon\Carbon;
+use App\Services\AsistenciaCalculator;
 
 class AsistenciaController extends Controller
 {
@@ -23,6 +24,7 @@ class AsistenciaController extends Controller
     public function marcarEntrada(Request $request)
     {
         $usuario = Usuario::find($request->usuario_id);
+
         if (!$usuario) {
             return response()->json(['error' => 'Usuario no encontrado'], 404);
         }
@@ -64,8 +66,8 @@ class AsistenciaController extends Controller
             ]);
         }
 
-        // Políticas
-        $politicas = $usuario->empresa->politicasEmpresa ?? null;
+        // Políticas (RELACIÓN CORRECTA)
+        $politicas = $usuario->empresa->politica;
         if (!$politicas) {
             return response()->json([
                 'message' => 'Entrada registrada (sin políticas configuradas)',
@@ -102,6 +104,7 @@ class AsistenciaController extends Controller
     public function marcarSalida(Request $request)
     {
         $usuario = Usuario::find($request->usuario_id);
+
         if (!$usuario) {
             return response()->json(['error' => 'Usuario no encontrado'], 404);
         }
@@ -133,14 +136,14 @@ class AsistenciaController extends Controller
             $asistencia->save();
 
             return response()->json([
-                'message' => 'Salida registrada sin turno asignado',
+                'message' => 'Salida sin turno asignado',
                 'estado'  => 'fuera',
                 'asistencia' => $asistencia
             ]);
         }
 
-        // Políticas
-        $politicas = $usuario->empresa->politicasEmpresa ?? null;
+        // Políticas (RELACIÓN CORRECTA)
+        $politicas = $usuario->empresa->politica;
         if (!$politicas) {
             $asistencia->estado = 'fuera';
             $asistencia->save();
@@ -152,9 +155,7 @@ class AsistenciaController extends Controller
             ]);
         }
 
-        // ===============================
         // SALIDA ANTICIPADA
-        // ===============================
         $horaEsperadaSalida = Carbon::parse($turno->hora_fin);
         $horaRealSalida     = Carbon::parse($horaSalidaReal);
 
@@ -165,9 +166,7 @@ class AsistenciaController extends Controller
             $minutosSalidaAnticipada = $horaEsperadaSalida->diffInMinutes($horaRealSalida);
         }
 
-        // ===============================
         // HORAS EXTRA
-        // ===============================
         $minutosHorasExtra = 0;
         if ($horaRealSalida->gt($horaEsperadaSalida)) {
             $minutosHorasExtra = $horaRealSalida->diffInMinutes($horaEsperadaSalida);
@@ -178,9 +177,7 @@ class AsistenciaController extends Controller
             }
         }
 
-        // ===============================
-        // TIEMPO TRABAJADO REAL
-        // ===============================
+        // TIEMPO TRABAJADO
         $horaEntradaReal = Carbon::parse($asistencia->hora_entrada);
         $minutosTrabajados = $horaRealSalida->diffInMinutes($horaEntradaReal);
 
@@ -202,7 +199,6 @@ class AsistenciaController extends Controller
             'message' => 'Salida registrada correctamente',
             'estado'  => 'fuera',
             'asistencia' => $asistencia,
-            'turno_usado' => $turno->nombre,
             'politicas' => [
                 'tolerancia_salida' => $toleranciaSalida,
                 'max_extra'         => $politicas->max_horas_extra_por_dia
@@ -225,7 +221,7 @@ class AsistenciaController extends Controller
             $query = Asistencia::where('usuario_id', $usuario_id)
                 ->where('fecha', now()->toDateString());
 
-            // No admin → filtrar empresa y opcional sucursal
+            // No admin → filtrar empresa
             if (!in_array($userAuth->role, ['admin'])) {
                 $query->where('empresa_id', $userAuth->empresa_id);
 
@@ -251,6 +247,7 @@ class AsistenciaController extends Controller
                 'estado' => $estado,
                 'asistencia' => $asistencia
             ]);
+
         } catch (\Throwable $e) {
             return response()->json([
                 'error' => 'Error interno',
@@ -260,156 +257,122 @@ class AsistenciaController extends Controller
     }
 
     /** ======================
-     * OBTENER POR RANGO
+     * OBTENER RANGO (USA SERVICIO)
      * ====================== */
-   
+    public function obtenerPorRango(Request $request)
+    {
+        $usuario_id = $request->usuario_id;
+        $from = $request->from;
+        $to = $request->to;
 
-public function obtenerPorRango(Request $request)
-{
-    $usuario_id = $request->usuario_id;
-    $from = $request->from;
-    $to = $request->to;
+        $userAuth = auth()->user();
 
-    $userAuth = auth()->user();
-
-    if (!$usuario_id || !$from || !$to) {
-        return response()->json(['error' => 'Faltan parámetros'], 400);
-    }
-
-    // Usuario + turno actual
-    $usuario = Usuario::with(['turnos' => function ($q) {
-        $q->orderBy('empleado_turno.created_at', 'desc');
-    }])->findOrFail($usuario_id);
-
-    $turno = $usuario->turnos->first();
-    $politicas = $usuario->empresa->politicasEmpresa ?? null;
-
-    // ============================
-    // TRAER ASISTENCIAS
-    // ============================
-    $query = Asistencia::where('usuario_id', $usuario_id)
-        ->whereBetween('fecha', [$from, $to])
-        ->orderBy('fecha', 'asc');
-
-    // Admin igual se limita a su empresa
-    $query->where('empresa_id', $userAuth->empresa_id);
-
-    $asistencias = $query->get();
-
-    // ============================
-    // TRAER DESCANSOS DEL RANGO
-    // ============================
-    $descansos = \App\Models\Descanso::where('usuario_id', $usuario_id)
-        ->whereBetween('hora_inicio', [$from . " 00:00:00", $to . " 23:59:59"])
-        ->orderBy('hora_inicio', 'asc')
-        ->get();
-
-    // ============================
-    // PROCESAR POR DÍA
-    // ============================
-    $diaADia = [];
-    $resumen = [
-        'dias' => 0,
-        'total_trabajado_min' => 0,
-        'total_extra_min' => 0,
-        'total_atraso_min' => 0,
-        'total_salida_anticipada_min' => 0,
-        'total_descansos_min' => 0,
-        'exceso_descanso_sum' => 0,
-    ];
-
-    foreach ($asistencias as $asis) {
-
-        // Descansos DEL DÍA
-        $descansosDia = $descansos->filter(function ($d) use ($asis) {
-            return substr($d->hora_inicio, 0, 10) === $asis->fecha;
-        });
-
-        // Cálculo total de descansos reales
-        $minDescanso = 0;
-        foreach ($descansosDia as $d) {
-            if ($d->hora_fin) {
-                $inicio = Carbon\Carbon::parse($d->hora_inicio);
-                $fin = Carbon\Carbon::parse($d->hora_fin);
-                $minDescanso += $inicio->diffInMinutes($fin);
-            }
+        if (!$usuario_id || !$from || !$to) {
+            return response()->json(['error' => 'Faltan parámetros'], 400);
         }
 
-        // Políticas → minutos permitidos de descanso (si hay turno)
-        $minPermitido = $turno ? ($turno->minutos_almuerzo ?? 0) : 0;
-        $excesoDesc = max(0, $minDescanso - $minPermitido);
+        // Usuario + último turno asignado
+        $usuario = Usuario::with(['turnos' => function ($q) {
+            $q->orderBy('empleado_turno.created_at', 'desc');
+        }])->findOrFail($usuario_id);
 
-        // =============================
-        // Armado del registro por día
-        // =============================
-        $dia = [
-            'fecha' => $asis->fecha,
-            'entrada' => $asis->hora_entrada,
-            'salida' => $asis->hora_salida,
-            'trabajado_min' => $asis->minutos_trabajados ?? 0,
-            'atraso_min' => $asis->minutos_atraso ?? 0,
-            'salida_anticipada_min' => $asis->minutos_salida_anticipada ?? 0,
-            'horas_extra_min' => $asis->minutos_horas_extra ?? 0,
-            'descansos_usados_min' => $minDescanso,
-            'exceso_descanso_min' => $excesoDesc,
-            'estado_jornada' => $asis->estado_jornada,
-            'cumplio_turno' => ($asis->estado_jornada === 'completa' || $asis->estado_jornada === 'extra')
+        $turno = $usuario->turnos->first();
+
+        // POLITICAS CORRECTAS
+        $politicas = $usuario->empresa->politica;
+
+        // Obtener asistencias del rango
+        $query = Asistencia::where('usuario_id', $usuario_id)
+            ->whereBetween('fecha', [$from, $to])
+            ->orderBy('fecha', 'asc');
+
+        $query->where('empresa_id', $userAuth->empresa_id);
+
+        $asistencias = $query->get();
+
+        // Obtener descansos del rango
+        $descansos = \App\Models\Descanso::where('usuario_id', $usuario_id)
+            ->whereBetween('hora_inicio', [$from . " 00:00:00", $to . " 23:59:59"])
+            ->orderBy('hora_inicio', 'asc')
+            ->get();
+
+        // Procesamiento corporativo
+        $diaADia = [];
+        $resumen = [
+            'dias' => 0,
+            'total_trabajado_min' => 0,
+            'total_extra_min' => 0,
+            'total_atraso_min' => 0,
+            'total_salida_anticipada_min' => 0,
+            'total_descansos_min' => 0,
+            'exceso_descanso_sum' => 0,
         ];
 
-        $diaADia[] = $dia;
+        foreach ($asistencias as $asis) {
 
-        // =============================
-        // ACUMULAR RESUMEN GENERAL
-        // =============================
-        $resumen['dias']++;
-        $resumen['total_trabajado_min'] += $dia['trabajado_min'];
-        $resumen['total_extra_min'] += $dia['horas_extra_min'];
-        $resumen['total_atraso_min'] += $dia['atraso_min'];
-        $resumen['total_salida_anticipada_min'] += $dia['salida_anticipada_min'];
-        $resumen['total_descansos_min'] += $minDescanso;
-        $resumen['exceso_descanso_sum'] += $excesoDesc;
+            $descansosDia = $descansos->filter(function ($d) use ($asis) {
+                return substr($d->hora_inicio, 0, 10) === $asis->fecha;
+            });
+
+            // Servicio de cálculo corporativo
+            $datos = AsistenciaCalculator::calcularDia(
+                $asis,
+                $turno,
+                $politicas,
+                $descansosDia
+            );
+
+            $dia = array_merge([
+                'fecha'  => $asis->fecha,
+                'entrada' => $asis->hora_entrada,
+                'salida'  => $asis->hora_salida,
+            ], $datos);
+
+            $diaADia[] = $dia;
+
+            // Resumen general
+            $resumen['dias']++;
+            $resumen['total_trabajado_min']         += $datos['trabajado_min'];
+            $resumen['total_extra_min']             += $datos['horas_extra_min'];
+            $resumen['total_atraso_min']            += $datos['atraso_min'];
+            $resumen['total_salida_anticipada_min'] += $datos['salida_anticipada_min'];
+            $resumen['total_descansos_min']         += $datos['descansos_usados_min'];
+            $resumen['exceso_descanso_sum']         += $datos['exceso_descanso_min'];
+        }
+
+        // Cumplimiento general
+        if ($resumen['dias'] === 0) {
+            $resumen['cumplimiento_general'] = "sin_registros";
+        } else {
+            $porcentaje = 100 - (
+                ($resumen['total_atraso_min'] / max(1, $resumen['dias'])) * 0.5 +
+                ($resumen['exceso_descanso_sum'] > 0 ? 10 : 0)
+            );
+
+            $resumen['cumplimiento_general'] =
+                $porcentaje >= 90 ? "excelente" :
+                ($porcentaje >= 75 ? "aceptable" : "bajo");
+        }
+
+        return response()->json([
+            'usuario_id' => $usuario_id,
+            'from'       => $from,
+            'to'         => $to,
+
+            'turno' => $turno ? [
+                'id'                 => $turno->id,
+                'nombre'             => $turno->nombre,
+                'hora_inicio'        => $turno->hora_inicio,
+                'hora_fin'           => $turno->hora_fin,
+                'tolerancia_entrada' => $turno->tolerancia_entrada,
+                'tolerancia_salida'  => $turno->tolerancia_salida,
+                'minutos_almuerzo'   => $turno->minutos_almuerzo,
+            ] : null,
+
+            'data'     => $asistencias,
+            'dia_a_dia'=> $diaADia,
+            
+            'resumen'  => $resumen,
+        ]);
     }
-
-    // ============================
-    // CUMPLIMIENTO GENERAL
-    // ============================
-    if ($resumen['dias'] === 0) {
-        $resumen['cumplimiento_general'] = "sin_registros";
-    } else {
-        $porcentaje = 100 - (
-            ($resumen['total_atraso_min'] / max(1, $resumen['dias'])) * 0.5 +
-            ($resumen['exceso_descanso_sum'] > 0 ? 10 : 0)
-        );
-
-        $resumen['cumplimiento_general'] =
-            $porcentaje >= 90 ? "excelente" :
-            ($porcentaje >= 75 ? "aceptable" : "bajo");
-    }
-
-    // ============================
-    // RESPUESTA FINAL
-    // ============================
-    return response()->json([
-        'usuario_id' => $usuario_id,
-        'from'       => $from,
-        'to'         => $to,
-
-        'turno' => $turno ? [
-            'id'                 => $turno->id,
-            'nombre'             => $turno->nombre,
-            'hora_inicio'        => $turno->hora_inicio,
-            'hora_fin'           => $turno->hora_fin,
-            'tolerancia_entrada' => $turno->tolerancia_entrada,
-            'tolerancia_salida'  => $turno->tolerancia_salida,
-            'minutos_almuerzo'   => $turno->minutos_almuerzo,
-        ] : null,
-
-        'data' => $asistencias,
-
-        'dia_a_dia' => $diaADia,
-        'resumen' => $resumen,
-    ]);
-}
-
-
 }

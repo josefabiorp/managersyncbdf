@@ -9,16 +9,14 @@ class Empresa extends Model
 {
     use HasFactory;
 
-    // Define el nombre de la tabla (opcional si sigue la convención de nombres)
     protected $table = 'empresas';
 
-    // Define los campos que son asignables en masa
     protected $fillable = [
         'nombre',
         'telefono',
         'correo',
         'codigo_actividad',
-       'descripcion',
+        'descripcion',
         'cedula_empresa',
         'provincia',
         'canton',
@@ -26,11 +24,17 @@ class Empresa extends Model
         'otras_senas',
         'empresa',
         'logo',
-       
-       
     ];
 
-    // Define las relaciones
+    /**
+     * 🔵 RELACIÓN CORRECTA: una empresa tiene UNA política
+     * Usa el modelo REAL: PoliticaEmpresa (singular)
+     */
+    public function politica()
+    {
+        return $this->hasOne(\App\Models\PoliticaEmpresa::class, 'empresa_id');
+    }
+
     public function usuario()
     {
         return $this->belongsTo(Usuario::class);
