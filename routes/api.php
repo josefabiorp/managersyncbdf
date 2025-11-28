@@ -167,3 +167,13 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // ...
 });
+use App\Http\Controllers\ChatController;
+
+Route::middleware('auth:sanctum')->group(function () {
+
+    Route::get('/chat/conversaciones', [ChatController::class, 'conversaciones']);
+    Route::get('/chat/mensajes', [ChatController::class, 'mensajes']);
+    Route::post('/chat/enviar', [ChatController::class, 'enviar']);
+    Route::post('/chat/leido/{id}', [ChatController::class, 'marcarLeido']);
+    Route::delete('/chat/eliminar/{id}', [ChatController::class, 'eliminarSoloParaMi']);
+});
