@@ -188,33 +188,49 @@ class EmpresaController extends Controller
     // ───────────────────────────────────────────────
     // DELETE /empresas/{id}
     // ───────────────────────────────────────────────
-    public function destroy($id)
-    {
-        $empresa = Empresa::find($id);
+   public function destroy($id)
+{
+    $empresa = Empresa::find($id);
 
-        if (!$empresa) {
-            return response()->json([
-                'error' => 'No se puede eliminar: la empresa no existe.',
-            ], 404);
-        }
-
-        try {
-            // Eliminar logo
-            if ($empresa->logo && Storage::exists("public/logos/{$empresa->logo}")) {
-                Storage::delete("public/logos/{$empresa->logo}");
-            }
-
-            $empresa->delete();
-
-            return response()->json([
-                'message' => 'Empresa eliminada correctamente.'
-            ], 200);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'error' => 'No se pudo eliminar la empresa.',
-                'details' => $e->getMessage(),
-            ], 500);
-        }
+    if (!$empresa) {
+        return response()->json([
+            'error' => 'No se puede eliminar: la empresa no existe.',
+        ], 404);
     }
+
+    try {
+        // Eliminar logo si existe
+        if ($empresa->logo && Storage::exists("public/logos/{$empresa->logo}")) {
+            Storage::delete("public/logos/{$empresa->logo}");
+        }
+
+        $empresa->delete();
+
+        return response()->json([
+            'message' => 'Empresa eliminada correctamente.'
+        ], 200);
+
+    } catch (\Illuminate\Database\QueryException $e) {
+
+        // 🚫 CASO 1: Error por llaves foráneas (empresa tiene sucursales, usuarios, políticas, etc.)
+        if ($e->getCode() == "23000") {
+            return response()->json([
+                'error' => 'No se puede eliminar la empresa porque tiene registros asociados (usuarios, sucursales, políticas u otros).',
+            ], 409); // 409 = Conflict
+        }
+
+        // Otros errores SQL
+        return response()->json([
+            'error'   => 'Error en la base de datos al eliminar la empresa.',
+            'details' => $e->getMessage(),
+        ], 500);
+
+    } catch (\Exception $e) {
+
+        return response()->json([
+            'error'   => 'No se pudo eliminar la empresa.',
+            'details' => $e->getMessage(),
+        ], 500);
+    }
+}
 }
